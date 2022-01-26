@@ -508,6 +508,10 @@ namespace Renderer
 
   bool InitDirect3D(RENDERER_SETTINGS * pSetup) 
   {
+    // HDR output is enabled by using a 16bit float backbuffer and using a flip model swap chain
+    // See https://docs.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range
+    // and https://devblogs.microsoft.com/directx/dxgi-flip-model/
+    // Everything else is just to make it look good.
     bHdr = pSetup->bHdr;
     format = bHdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
 
