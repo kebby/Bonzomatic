@@ -1485,8 +1485,10 @@ namespace Renderer
 
   bool GrabFrame( void * pPixelBuffer )
   {
+    // HDR isn't supported yet; TODO in case we need HDR output over NDI (which it supports)
+    // We'll probably need a color space conversion to 10 bit Rec.2100 here
     if (bHdr)
-      return false; // not supported yet but GrabFrame seems to be unused anyway
+      return false; 
 
     if (!pFrameGrabTexture)
       return false;

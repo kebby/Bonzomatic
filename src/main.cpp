@@ -103,7 +103,7 @@ int main( int argc, const char *argv[] )
   bool skipSetupDialog = false;
   if ( options.has<jsonxx::Boolean>( "skipSetupDialog" ) )
     skipSetupDialog = options.get<jsonxx::Boolean>( "skipSetupDialog" );
-  bool bHdr = true;
+  bool bHdr = false;
   if (options.has<jsonxx::Boolean>("hdr"))
     bHdr = options.get<jsonxx::Boolean>("hdr");
 

@@ -31,6 +31,7 @@ You can configure Bonzomatic by creating a `config.json` and placing it next to 
 The file can have the following contents: (all fields are optional)
 ``` javascript
 {
+  "hdr": false, // Direct3D 11 only - if true, Bonzomatic will render in HDR (wider color gamut and brightness can go above 1.0)
   "skipSetupDialog": true, // If true, setup dialog will be suppressed - all values you provide below will be used without validation (at your own risk!)
   "window":{ // default window size / state; if there's a setup dialog, it will override it
     "width":1920,
@@ -149,6 +150,17 @@ cd /usr/ports/graphics/bonzomatic
 make install
 ```
 
+## HDR output (Windows/Direct3D11 only)
+To enable HDR output on a capable display, turn on HDR in Windows' Display Settings, and add `"hdr": true` to the configuration file
+
+From now on, the shader's output color will be linear (no more gamma curve) and in a wider gamut (DCI-P3 to be precise),
+and you can make your pixels brighter than the default white (1.0).
+
+Note that the default shader is different, so it might be worth taking a look.
+
+There's also a new shader constant that contains your screen's maximum brightness so you can tone map your shader to your display's 
+capabilities. In case you want to capture your shader to a video, it might be a good idea to override this value with eg. 1000 or 1500 so 
+the captured video isn't dependent on your monitor.
 
 ## Organizing a competition
 If you want to organize a competition using Bonzomatic at your party, here's a handy-dandy guide on how to get started:
