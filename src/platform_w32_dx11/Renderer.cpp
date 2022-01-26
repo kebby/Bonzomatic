@@ -4,6 +4,8 @@
 #include <float.h>
 
 #include <d3d11.h>
+//#include <d3d11_4.h>
+#include <dxgi1_6.h>
 #include <D3Dcompiler.h>
 
 #include "../Renderer.h"
@@ -168,12 +170,15 @@ namespace Renderer
   IDXGISwapChain * pSwapChain = NULL;
   ID3D11Device * pDevice = NULL;
   ID3D11DeviceContext * pContext = NULL;
+  ID3D11Texture2D* pBackBuffer = NULL;
   ID3D11RenderTargetView * pRenderTarget = NULL;
   ID3D11VertexShader * pVertexShader = NULL;
   ID3D11PixelShader * theShader = NULL;
+  ID3D11PixelShader* pBlitIntermediatePixelShader = NULL;
   ID3D11ShaderReflection * pShaderReflection = NULL;
-  ID3D11Texture2D * pBackBuffer = NULL;
   ID3D11Texture2D * pFrameGrabTexture = NULL;
+  ID3D11Texture2D* pIntermediateTexture = NULL;
+  ID3D11ShaderResourceView* pIntermediateResourceView = NULL;
 
   int nWidth = 0;
   int nHeight = 0;
@@ -367,57 +372,91 @@ namespace Renderer
     return true;
   }
 
+  char defaultBlitIntermediatePixelShader[65536] =
+    "Texture2D tex;\n"
+    "SamplerState smp;\n"
+    "float4 main( float4 position : SV_POSITION, float2 TexCoord : TEXCOORD0 ) : SV_TARGET\n"
+    "{\n"
+    "  return tex.Sample(smp,float2(TexCoord.x,1-TexCoord.y));\n"
+    "}\n";
+
+
   bool bVsync = false;
+  bool bHdr = false;
+  float maxLuminance = 80.0; // maximum for SDR
+  DXGI_FORMAT format;
   bool InitDirect3D(RENDERER_SETTINGS * pSetup) 
   {
-    DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    bHdr = pSetup->bHdr;
+    format = bHdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
 
     DXGI_SWAP_CHAIN_DESC desc;
     ZeroMemory(&desc, sizeof(DXGI_SWAP_CHAIN_DESC));
-    desc.BufferCount = 1;
+    
     desc.BufferDesc.Width = pSetup->nWidth;
     desc.BufferDesc.Height = pSetup->nHeight;
     desc.BufferDesc.Format = format;
-    if (pSetup->bVsync)
+    bVsync = pSetup->bVsync;
+
+    IDXGIOutput6* pOut6 = NULL;
+    IDXGIFactory1 * pFactory = NULL;
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory);
+    if (pFactory)
     {
-      bVsync = true;
-      IDXGIFactory1 * pFactory = NULL;
-      HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory);
-      if (pFactory)
+      IDXGIAdapter1 * pAdapter = NULL;
+      pFactory->EnumAdapters1( 0, &pAdapter );
+      if (pAdapter)
       {
-        IDXGIAdapter1 * pAdapter = NULL;
-        pFactory->EnumAdapters1( 0, &pAdapter );
-        if (pAdapter)
+        IDXGIOutput * pOutput = NULL;
+        pAdapter->EnumOutputs( 0, &pOutput );
+        if (pOutput)
         {
-          IDXGIOutput * pOutput = NULL;
-          pAdapter->EnumOutputs( 0, &pOutput );
-          if (pOutput)
+          pOutput->QueryInterface<IDXGIOutput6>(&pOut6);
+          if (bHdr)
           {
-            unsigned int nModeCount = 0;
-            pOutput->GetDisplayModeList( format, DXGI_ENUM_MODES_INTERLACED | DXGI_ENUM_MODES_SCALING, &nModeCount, NULL);
-
-            DXGI_MODE_DESC * pModes = new DXGI_MODE_DESC[ nModeCount ];
-            pOutput->GetDisplayModeList( format, DXGI_ENUM_MODES_INTERLACED | DXGI_ENUM_MODES_SCALING, &nModeCount, pModes);
-
-            for (unsigned int i=0; i<nModeCount; i++)
+            if (pOut6)
             {
-              if (pModes[i].Width == pSetup->nWidth && pModes[i].Height == pSetup->nHeight)
+              DXGI_OUTPUT_DESC1 outdesc1;
+              pOut6->GetDesc1(&outdesc1);
+
+              if (outdesc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
               {
-                desc.BufferDesc = pModes[i];
-                break;
+                maxLuminance = outdesc1.MaxFullFrameLuminance;
+              }
+              else
+              {
+                printf("WARNING: HDR is on but your screen isn't set to HDR;\nColors will be clipped to SDR\n");
               }
             }
-            delete[] pModes;
-
-            pOutput->Release();
+            else
+            {
+              printf("Sorry, your system doesn't support HDR output\n");
+              return false;
+            }
           }
 
-          pAdapter->Release();
+          if (pSetup->windowMode == RENDERER_WINDOWMODE_FULLSCREEN)
+          {           
+            DXGI_MODE_DESC closestMode;
+            if (SUCCEEDED(pOutput->FindClosestMatchingMode(&desc.BufferDesc, &closestMode, NULL)))
+            {
+              desc.BufferDesc = closestMode;
+              desc.BufferDesc.Format = format;
+            }
+          }
+          
+          pOutput->Release();
         }
 
-        pFactory->Release();
+        pAdapter->Release();
       }
+
+      pFactory->Release();
     }
+
+    // use flip model if available (needed for HDR and reduces OS overhead)
+    desc.SwapEffect = pOut6 ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_DISCARD;
+    desc.BufferCount = pOut6 ? 2 : 1; 
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.OutputWindow = hWnd;
     desc.SampleDesc.Count = 1;
@@ -446,22 +485,54 @@ namespace Renderer
       return false;
     }
 
-    pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
-
-    pDevice->CreateRenderTargetView(pBackBuffer, NULL, &pRenderTarget);
-    pBackBuffer->Release();
-
-    pContext->OMSetRenderTargets(1, &pRenderTarget, NULL);
-
-    // create staging texture for frame grabbing
+    pOut6->Release();
 
     D3D11_TEXTURE2D_DESC description;
+    pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
     pBackBuffer->GetDesc( &description );
+    pBackBuffer->Release();
+
+    // when the flip model is used, the backbuffer might still be at the native screen resolution
+    // create an intermediate render target in this case
+    if (description.Width != desc.BufferDesc.Width || description.Height != desc.BufferDesc.Height)
+    {
+      description.Width = desc.BufferDesc.Width;
+      description.Height = desc.BufferDesc.Height;
+      description.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+      description.CPUAccessFlags = 0;
+      description.Usage = D3D11_USAGE_DEFAULT;
+      hr = pDevice->CreateTexture2D(&description, NULL, &pIntermediateTexture);
+
+      D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+      ZeroMemory(&desc, sizeof(D3D11_SHADER_RESOURCE_VIEW_DESC));
+      desc.Format = format;
+      desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+      desc.Texture2D.MostDetailedMip = 0;
+      desc.Texture2D.MipLevels = 1;
+      pDevice->CreateShaderResourceView(pIntermediateTexture, &desc, &pIntermediateResourceView);
+
+
+      ID3DBlob* pCode = NULL;
+      ID3DBlob* pErrors = NULL;
+
+      if (D3DCompile(defaultBlitIntermediatePixelShader, strlen(defaultBlitIntermediatePixelShader), NULL, NULL, NULL, "main", "ps_4_0", NULL, NULL, &pCode, &pErrors) != S_OK)
+      {
+        printf("[Renderer] D3DCompile (PS) failed\n");
+        return false;
+      }
+
+      if (pDevice->CreatePixelShader(pCode->GetBufferPointer(), pCode->GetBufferSize(), NULL, &pBlitIntermediatePixelShader) != S_OK)
+      {
+        printf("[Renderer] CreatePixelShader failed\n");
+        return false;
+      }
+    }
+
+    // create staging texture for frame grabbing
     description.BindFlags = 0;
     description.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
     description.Usage = D3D11_USAGE_STAGING;
-
-    HRESULT hr = pDevice->CreateTexture2D( &description, NULL, &pFrameGrabTexture );
+    hr = pDevice->CreateTexture2D( &description, NULL, &pFrameGrabTexture );
 
     return true;
   }
@@ -529,17 +600,6 @@ namespace Renderer
       return false;
     }
 
-    //////////////////////////////////////////////////////////////////////////
-
-    D3D11_VIEWPORT viewport;
-    ZeroMemory(&viewport, sizeof(D3D11_VIEWPORT));
-
-    viewport.TopLeftX = 0;
-    viewport.TopLeftY = 0;
-    viewport.Width  = settings->nWidth;
-    viewport.Height = settings->nHeight;
-
-    pContext->RSSetViewports(1, &viewport);
 
     //////////////////////////////////////////////////////////////////////////
 
@@ -759,11 +819,70 @@ namespace Renderer
       DispatchMessage( &msg );
     }
 
+    pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
+    
+    pDevice->CreateRenderTargetView(pIntermediateTexture ? pIntermediateTexture : pBackBuffer, NULL, &pRenderTarget);
+
+    pContext->OMSetRenderTargets(1, &pRenderTarget, NULL);
+
+    D3D11_VIEWPORT viewport;
+    ZeroMemory(&viewport, sizeof(D3D11_VIEWPORT));
+    viewport.TopLeftX = 0;
+    viewport.TopLeftY = 0;
+    viewport.Width = nWidth;
+    viewport.Height = nHeight;
+    pContext->RSSetViewports(1, &viewport);
+
     float f[4] = { 0.08f, 0.18f, 0.18f, 1.0f };
     pContext->ClearRenderTargetView(pRenderTarget, f);
+
+    pRenderTarget->Release();
   }
+
   void EndFrame()
   {
+
+    // scale intermediate texture into backbuffer if present
+    if (pIntermediateTexture)
+    {   
+      float factor[4] = { 1.0f, 1.0f, 1.0f, 1.0f, };
+      pContext->VSSetShader(pVertexShader, NULL, NULL);
+      pContext->PSSetShader(pBlitIntermediatePixelShader, NULL, NULL);
+      pContext->IASetInputLayout(pFullscreenQuadLayout);
+      pContext->PSSetSamplers(0, 1, &pFullscreenQuadSamplerState);
+      pContext->PSSetConstantBuffers(0, 1, &pFullscreenQuadConstantBuffer);
+      pContext->OMSetBlendState(pFullscreenQuadBlendState, factor, 0xFFFFFFFF);
+      pContext->RSSetState(pFullscreenQuadRasterizerState);
+
+      pDevice->CreateRenderTargetView(pBackBuffer, NULL, &pRenderTarget);
+      pContext->OMSetRenderTargets(1, &pRenderTarget, NULL);
+      pRenderTarget->Release();
+
+      pContext->PSSetShaderResources(0, 1, &pIntermediateResourceView);
+
+      D3D11_TEXTURE2D_DESC description;
+      pBackBuffer->GetDesc(&description);
+      D3D11_VIEWPORT viewport;
+      ZeroMemory(&viewport, sizeof(D3D11_VIEWPORT));
+      viewport.TopLeftX = 0;
+      viewport.TopLeftY = 0;
+      viewport.Width = description.Width;
+      viewport.Height = description.Height;
+      pContext->RSSetViewports(1, &viewport);
+
+      ID3D11Buffer* buffers[] = { pFullscreenQuadVB };
+      UINT stride[] = { sizeof(float) * 5 };
+      UINT offset[] = { 0 };
+      pContext->IASetVertexBuffers(0, 1, buffers, stride, offset);
+      pContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+      pContext->Draw(4, 0);
+
+      ID3D11ShaderResourceView* dummy[1] = { NULL };
+      pContext->PSSetShaderResources(0, 1, dummy);
+    }
+
+    pBackBuffer->Release();
     pSwapChain->Present( bVsync ? 1 : 0, NULL );
   }
   bool WantsToQuit()
@@ -793,7 +912,6 @@ namespace Renderer
     if (pGUIQuadLayout) pGUIQuadLayout->Release();
     if (pGUIQuadVB) pGUIQuadVB->Release();
 
-    if (pRenderTarget) pRenderTarget->Release();
     if (pContext) pContext->Release();
     if (pSwapChain) pSwapChain->Release();
     if (pDevice) pDevice->Release();
@@ -921,7 +1039,7 @@ namespace Renderer
     ZeroMemory( &desc, sizeof( D3D11_TEXTURE2D_DESC ) );
     desc.Width = nWidth;
     desc.Height = nHeight;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Format = format;
     desc.MipLevels = 1;
     desc.ArraySize = 1;
     desc.SampleDesc.Count = 1;
@@ -1092,7 +1210,7 @@ namespace Renderer
   {
     ID3D11Resource * pTex = ( (DX11Texture *) tex )->pTexture;
 
-    pContext->CopySubresourceRegion( pTex, 0, 0, 0, 0, pBackBuffer, 0, NULL );
+    pContext->CopySubresourceRegion( pTex, 0, 0, 0, 0, pIntermediateTexture ? pIntermediateTexture : pBackBuffer, 0, NULL );
   }
 
   //////////////////////////////////////////////////////////////////////////
@@ -1233,7 +1351,7 @@ namespace Renderer
     if (!pFrameGrabTexture)
       return false;
 
-    pContext->CopyResource( pFrameGrabTexture, pBackBuffer );
+    pContext->CopyResource( pFrameGrabTexture, pIntermediateTexture ? pIntermediateTexture : pBackBuffer );
 
     D3D11_MAPPED_SUBRESOURCE resource;
     unsigned int nSubresource = D3D11CalcSubresource( 0, 0, 0 );

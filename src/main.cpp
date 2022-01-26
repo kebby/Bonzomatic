@@ -103,6 +103,9 @@ int main( int argc, const char *argv[] )
   bool skipSetupDialog = false;
   if ( options.has<jsonxx::Boolean>( "skipSetupDialog" ) )
     skipSetupDialog = options.get<jsonxx::Boolean>( "skipSetupDialog" );
+  bool bHdr = true;
+  if (options.has<jsonxx::Boolean>("hdr"))
+    bHdr = options.get<jsonxx::Boolean>("hdr");
 
   SetupDialog::SETTINGS settings;
   settings.sFFT.bUseRecordingDevice = true;
@@ -114,10 +117,11 @@ int main( int argc, const char *argv[] )
   }
 
   settings.sRenderer.bVsync = false;
+  settings.sRenderer.bHdr = bHdr;
 #ifdef _DEBUG
   settings.sRenderer.nWidth = 1280;
   settings.sRenderer.nHeight = 720;
-  settings.sRenderer.windowMode = RENDERER_WINDOWMODE_WINDOWED;
+  settings.sRenderer.windowMode = RENDERER_WINDOWMODE_FULLSCREEN;
 #else
   settings.sRenderer.nWidth = 1920;
   settings.sRenderer.nHeight = 1080;
