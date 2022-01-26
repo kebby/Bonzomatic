@@ -167,6 +167,11 @@ namespace Renderer
     "\treturn Out;\n"
     "}\n";
 
+  const char* GetDefaultShader()
+  {
+    return defaultShader;
+  }
+
   bool run = true;
 
   LPDIRECT3D9 pD3D = NULL;
@@ -464,6 +469,9 @@ namespace Renderer
 
   bool Open( RENDERER_SETTINGS * settings )
   {
+    if (settings->bHdr)
+      printf("WARNING: HDR isn't supported on Direct3D 9");
+
     if (!InitWindow(settings))
     {
       printf("[Renderer] InitWindow failed\n");

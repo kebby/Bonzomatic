@@ -164,6 +164,11 @@ namespace Renderer
     "\tout_color = f + t;\n"
     "}";
 
+  const char *GetDefaultShader()
+  {
+    return defaultShader;
+  }
+
   GLFWwindow * mWindow = NULL;
   bool run = true;
 
@@ -213,6 +218,9 @@ namespace Renderer
 
   bool Open( RENDERER_SETTINGS * settings )
   {
+    if (settings->bHdr)
+      printf("WARNING: HDR isn't supported yet on OpenGL");
+
     glfwSetErrorCallback(error_callback);
     theShader = 0;
     

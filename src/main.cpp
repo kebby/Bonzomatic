@@ -121,7 +121,7 @@ int main( int argc, const char *argv[] )
 #ifdef _DEBUG
   settings.sRenderer.nWidth = 1280;
   settings.sRenderer.nHeight = 720;
-  settings.sRenderer.windowMode = RENDERER_WINDOWMODE_FULLSCREEN;
+  settings.sRenderer.windowMode = RENDERER_WINDOWMODE_WINDOWED;
 #else
   settings.sRenderer.nWidth = 1920;
   settings.sRenderer.nHeight = 1080;
@@ -345,7 +345,7 @@ int main( int argc, const char *argv[] )
   {
     printf("No valid last shader found, falling back to default...\n");
 
-    std::string sDefShader = Renderer::defaultShader;
+    std::string sDefShader = Renderer::GetDefaultShader();
 
     std::vector<std::string> tokens;
     for (std::map<std::string, Renderer::Texture*>::iterator it = textures.begin(); it != textures.end(); it++)

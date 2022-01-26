@@ -122,6 +122,7 @@ namespace Renderer
     "\tfloat fGlobalTime; // in seconds\n"
     "\tfloat2 v2Resolution; // viewport resolution (in pixels)\n"
     "\tfloat fFrameTime; // duration of the last frame, in seconds\n"
+    "\tfloat fMaxLuminance; // maximum luminance supported by the screen, in nits\n"
     "{%midi:begin%}"
     "\tfloat {%midi:name%};\n"
     "{%midi:end%}"
@@ -153,7 +154,59 @@ namespace Renderer
     "\treturn f + t;\n"
     "}";
 
-  char defaultVertexShader[65536] = 
+  const char defaultShaderHdr[65536] =
+    "{%textures:begin%}" // leave off \n here
+    "Texture2D {%textures:name%};\n"
+    "{%textures:end%}" // leave off \n here
+    "Texture1D texFFT; // towards 0.0 is bass / lower freq, towards 1.0 is higher / treble freq\n"
+    "Texture1D texFFTSmoothed; // this one has longer falloff and less harsh transients\n"
+    "Texture1D texFFTIntegrated; // this is continually increasing\n"
+    "Texture2D texPreviousFrame; // screenshot of the previous frame\n"
+    "SamplerState smp;\n"
+    "\n"
+    "cbuffer constants\n"
+    "{\n"
+    "\tfloat fGlobalTime; // in seconds\n"
+    "\tfloat2 v2Resolution; // viewport resolution (in pixels)\n"
+    "\tfloat fFrameTime; // duration of the last frame, in seconds\n"
+    "\tfloat fMaxLuminance; // maximum luminance supported by the screen, in nits\n"
+    "{%midi:begin%}"
+    "\tfloat {%midi:name%};\n"
+    "{%midi:end%}"
+    "}\n"
+    "\n"
+    "float3 plas( float2 v, float time )\n"
+    "{\n"
+    "\tfloat c = 0.5 + sin( v.x * 10.0 ) + cos( sin( time + v.y ) * 20.0 );\n"
+    "\treturn float3( sin(c * 0.2 + cos(time)) * 0.5, c * 0.15, cos( c * 0.1 + time / .4 ) * .5);\n"
+    "}\n"
+    "\n"
+    "float4 main( float4 position : SV_POSITION, float2 TexCoord : TEXCOORD ) : SV_TARGET\n"
+    "{\n"
+    "\tfloat2 uv = TexCoord;\n"
+    "\tuv -= 0.5;\n"
+    "\tuv /= float2(v2Resolution.y / v2Resolution.x, 1);\n"
+    "\tfloat2 m;\n"
+    "\tm.x = atan(uv.x / uv.y) / 3.14;\n"
+    "\tm.y = 1 / length(uv) * .2;\n"
+    "\tfloat d = 2*m.y;\n"
+    "\n"
+    "\tfloat f = texFFTSmoothed.Sample( smp, 0.8*length(uv) ).r * 30;\n"
+    "\tf=20*pow(saturate(f), 4.0);\n"
+    "\n"
+    "\tm.x += sin( fGlobalTime ) * 0.1;\n"
+    "\tm.y += fGlobalTime * 0.25;\n"
+    "\tfloat3 t = plas( m * 3.14, fGlobalTime );\n"
+    "\tt=2*pow(saturate(t)/d,6.0);\n"
+    "\n"
+    "\t// Output color is linear (so no pow(color, 0.45) please)) and in the DCI-P3 color space\n"
+    "\t// 1.0 means 80 nits of brightness and is the default SDR level\n"
+    "\t// The best screens can do 1600 nits atm, so don't go over 20 :)\n"
+    "\tfloat3 outcolor = f+t;\n"
+    "\treturn float4(min(fMaxLuminance / 80.0, outcolor),1);\n"
+    "}\n";
+
+  char defaultVertexShader[65536] =
     "struct VS_INPUT_PP { float3 Pos : POSITION; float2 TexCoord : TEXCOORD; };\n"
     "struct VS_OUTPUT_PP { float4 Pos : SV_POSITION; float2 TexCoord : TEXCOORD; };\n"
     "\n"
@@ -188,6 +241,17 @@ namespace Renderer
   int keyEventBufferCount = 0;
   MouseEvent mouseEventBuffer[512];
   int mouseEventBufferCount = 0;
+
+  bool bVsync = false;
+  bool bHdr = false;
+  float maxLuminance = 80.0; // maximum for SDR
+  DXGI_FORMAT format;
+  float uiBrightness = 1.0;
+
+  const char* GetDefaultShader()
+  {
+    return bHdr ? defaultShaderHdr : defaultShader;
+  }
 
   LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
   {
@@ -372,6 +436,7 @@ namespace Renderer
     return true;
   }
 
+  // just blit
   char defaultBlitIntermediatePixelShader[65536] =
     "Texture2D tex;\n"
     "SamplerState smp;\n"
@@ -380,11 +445,67 @@ namespace Renderer
     "  return tex.Sample(smp,float2(TexCoord.x,1-TexCoord.y));\n"
     "}\n";
 
+  // convert from the shader color space (DCI-P3 which is what most displays realistically support) 
+  // to the output color space (scRGB aka signed linear Rec.709)
+  // we need to do this as extra step so the conversion doesn't show up in the last frame texture
+  // the matrix was generated using https://github.com/kebby/Capturinha/blob/main/colormath.h
+  char defaultBlitIntermediatePixelShaderHdr[65536] =
+    "Texture2D tex;\n"
+    "SamplerState smp;\n"
+    "float4 main( float4 position : SV_POSITION, float2 TexCoord : TEXCOORD0 ) : SV_TARGET\n"
+    "{\n"
+    "  const float3x3 DCIP3toRec709 = { {1.22494, -0.042057, -0.0196375}, {-0.22494, 1.04206, -0.078636}, {0, 7.45058e-09, 1.09827} };\n"
+    "  return float4(mul(max(0, tex.Sample(smp,float2(TexCoord.x,1-TexCoord.y))).xyz, DCIP3toRec709), 1);\n"
+    "}\n";
 
-  bool bVsync = false;
-  bool bHdr = false;
-  float maxLuminance = 80.0; // maximum for SDR
-  DXGI_FORMAT format;
+
+  // get default white level to set the UI brightness
+  // why is this so complicated (it's like _one_ call in UWP)
+  float GetMonitorSDRWhiteLevel(HMONITOR monitor) {
+    float level = 2.0f;
+
+    MONITORINFOEXW moninfo;
+    moninfo.cbSize = sizeof(moninfo);
+    GetMonitorInfoW(monitor, &moninfo);
+
+    UINT nPaths=0, nModes=0;
+    GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &nPaths, &nModes);
+
+    DISPLAYCONFIG_PATH_INFO *paths = new DISPLAYCONFIG_PATH_INFO[nPaths];
+    DISPLAYCONFIG_MODE_INFO* modes = new DISPLAYCONFIG_MODE_INFO[nModes];
+    QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &nPaths, paths, &nModes, modes, NULL);
+
+    for (int i = 0; i < nPaths; i++)
+    {
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME devicename;
+      ZeroMemory(&devicename, sizeof(devicename));
+      devicename.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+      devicename.header.size = sizeof(devicename);
+      devicename.header.adapterId = paths[i].sourceInfo.adapterId;
+      devicename.header.id = paths[i].sourceInfo.id;
+      DisplayConfigGetDeviceInfo(&devicename.header);
+
+      if (!wcscmp(moninfo.szDevice, devicename.viewGdiDeviceName))
+      {
+        DISPLAYCONFIG_SDR_WHITE_LEVEL ddi;
+        ZeroMemory(&ddi, sizeof(ddi));
+        ddi.header.adapterId = paths[i].targetInfo.adapterId;
+        ddi.header.id = paths[i].targetInfo.id;
+        ddi.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+        ddi.header.size = sizeof(ddi);
+        DisplayConfigGetDeviceInfo(&ddi.header);
+        if (ddi.SDRWhiteLevel)
+          level = ddi.SDRWhiteLevel / 1000.0f;
+        break;
+      }
+    }
+
+    delete[] paths;
+    delete[] modes;
+    return level;
+  }
+
+
   bool InitDirect3D(RENDERER_SETTINGS * pSetup) 
   {
     bHdr = pSetup->bHdr;
@@ -411,17 +532,21 @@ namespace Renderer
         pAdapter->EnumOutputs( 0, &pOutput );
         if (pOutput)
         {
+          // this may fail on older Windows (swapchain will revert to old style in that case)
           pOutput->QueryInterface<IDXGIOutput6>(&pOut6);
+
+          // check for HDR support and retrieve system metrics
           if (bHdr)
           {
             if (pOut6)
             {
               DXGI_OUTPUT_DESC1 outdesc1;
               pOut6->GetDesc1(&outdesc1);
-
               if (outdesc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
               {
                 maxLuminance = outdesc1.MaxFullFrameLuminance;
+                uiBrightness = GetMonitorSDRWhiteLevel(outdesc1.Monitor);
+                printf("HDR is on, maximum luminance: %f nits\n", maxLuminance);
               }
               else
               {
@@ -435,6 +560,8 @@ namespace Renderer
             }
           }
 
+          // find the correct screen mode 
+          // (the old code sometimes chose the wrong refresh rate)
           if (pSetup->windowMode == RENDERER_WINDOWMODE_FULLSCREEN)
           {           
             DXGI_MODE_DESC closestMode;
@@ -485,16 +612,18 @@ namespace Renderer
       return false;
     }
 
-    pOut6->Release();
+    if (pOut6)
+      pOut6->Release();
 
     D3D11_TEXTURE2D_DESC description;
     pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
     pBackBuffer->GetDesc( &description );
     pBackBuffer->Release();
 
-    // when the flip model is used, the backbuffer might still be at the native screen resolution
-    // create an intermediate render target in this case
-    if (description.Width != desc.BufferDesc.Width || description.Height != desc.BufferDesc.Height)
+    // create an intermediate render target if needed
+    // - when rendering in HDR (color space conversion)
+    // - when flip model is used in fullscreen, the backbuffer may still be at the native screen resolution
+    if (bHdr || description.Width != desc.BufferDesc.Width || description.Height != desc.BufferDesc.Height)
     {
       description.Width = desc.BufferDesc.Width;
       description.Height = desc.BufferDesc.Height;
@@ -511,11 +640,13 @@ namespace Renderer
       desc.Texture2D.MipLevels = 1;
       pDevice->CreateShaderResourceView(pIntermediateTexture, &desc, &pIntermediateResourceView);
 
-
       ID3DBlob* pCode = NULL;
       ID3DBlob* pErrors = NULL;
 
-      if (D3DCompile(defaultBlitIntermediatePixelShader, strlen(defaultBlitIntermediatePixelShader), NULL, NULL, NULL, "main", "ps_4_0", NULL, NULL, &pCode, &pErrors) != S_OK)
+      // compile pixel shader for blitting to the backbuffer
+      // (we're reusing the fullscreenquad states/VS for the blit)
+      const char* blitInter = bHdr ? defaultBlitIntermediatePixelShaderHdr : defaultBlitIntermediatePixelShader;
+      if (D3DCompile(blitInter, strlen(blitInter), NULL, NULL, NULL, "main", "ps_4_0", NULL, NULL, &pCode, &pErrors) != S_OK)
       {
         printf("[Renderer] D3DCompile (PS) failed\n");
         return false;
@@ -654,14 +785,14 @@ namespace Renderer
     "struct VS_INPUT_PP { float3 Pos : POSITION; float4 Color: COLOR; float2 TexCoord : TEXCOORD0; float Factor : TEXCOORD1; };\n"
     "struct VS_OUTPUT_PP { float4 Pos : SV_POSITION; float4 Color: COLOR; float2 TexCoord : TEXCOORD0; float Factor : TEXCOORD1; };\n"
     "\n"
-    "cbuffer c { float4x4 matProj; float2 v2Offset; }\n"
+    "cbuffer c { float4x4 matProj; float2 v2Offset; float brightness; }\n"
     "\n"
     "VS_OUTPUT_PP main( VS_INPUT_PP In )\n"
     "{\n"
     "  VS_OUTPUT_PP Out;\n"
     "  Out.Pos = float4( In.Pos + float3(v2Offset,0), 1.0 );\n"
     "  Out.Pos = mul( Out.Pos, matProj );\n"
-    "  Out.Color = In.Color;\n"
+    "  Out.Color = float4(brightness * In.Color.xyz, In.Color.w);\n"
     "  Out.TexCoord = In.TexCoord;\n"
     "  Out.Factor = In.Factor;\n"
     "  return Out;\n"
@@ -837,12 +968,13 @@ namespace Renderer
     pContext->ClearRenderTargetView(pRenderTarget, f);
 
     pRenderTarget->Release();
+
+    SetShaderConstant("fMaxLuminance", maxLuminance);
   }
 
   void EndFrame()
   {
-
-    // scale intermediate texture into backbuffer if present
+    // convert and scale intermediate texture into backbuffer if present
     if (pIntermediateTexture)
     {   
       float factor[4] = { 1.0f, 1.0f, 1.0f, 1.0f, };
@@ -1330,6 +1462,7 @@ namespace Renderer
 
     pGUIMatrix[ 16 + 0 ] = rect.left;
     pGUIMatrix[ 16 + 1 ] = rect.top;
+    pGUIMatrix[ 16 + 2 ] = uiBrightness;
 
     D3D11_MAPPED_SUBRESOURCE subRes;
     pContext->Map( pGUIConstantBuffer, NULL, D3D11_MAP_WRITE_DISCARD, NULL, &subRes );
@@ -1348,6 +1481,9 @@ namespace Renderer
 
   bool GrabFrame( void * pPixelBuffer )
   {
+    if (bHdr)
+      return false; // not supported yet but GrabFrame seems to be unused anyway
+
     if (!pFrameGrabTexture)
       return false;
 
