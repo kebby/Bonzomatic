@@ -235,6 +235,8 @@ namespace Renderer
 
   int nWidth = 0;
   int nHeight = 0;
+  static int nScrWidth = 0;
+  static int nScrHeight = 0;
   HWND hWnd = NULL;
 
   KeyEvent keyEventBuffer[512];
@@ -337,16 +339,16 @@ namespace Renderer
       {
         mouseEventBuffer[mouseEventBufferCount].eventType = MOUSEEVENTTYPE_DOWN;
         mouseEventBuffer[mouseEventBufferCount].button = MOUSEBUTTON_LEFT;
-        mouseEventBuffer[mouseEventBufferCount].x = GET_X_LPARAM(lParam);
-        mouseEventBuffer[mouseEventBufferCount].y = GET_Y_LPARAM(lParam);
+        mouseEventBuffer[mouseEventBufferCount].x = GET_X_LPARAM(lParam) * nWidth / nScrWidth;
+        mouseEventBuffer[mouseEventBufferCount].y = GET_Y_LPARAM(lParam) * nHeight / nScrHeight;
         mouseEventBufferCount++;
       } break;
 
     case WM_MOUSEMOVE: 
       {
         mouseEventBuffer[mouseEventBufferCount].eventType = MOUSEEVENTTYPE_MOVE;
-        mouseEventBuffer[mouseEventBufferCount].x = GET_X_LPARAM(lParam);
-        mouseEventBuffer[mouseEventBufferCount].y = GET_Y_LPARAM(lParam);
+        mouseEventBuffer[mouseEventBufferCount].x = GET_X_LPARAM(lParam) * nWidth / nScrWidth;
+        mouseEventBuffer[mouseEventBufferCount].y = GET_Y_LPARAM(lParam) * nHeight / nScrHeight;
         mouseEventBufferCount++;
       } break;
 
@@ -354,8 +356,8 @@ namespace Renderer
       {
         mouseEventBuffer[mouseEventBufferCount].eventType = MOUSEEVENTTYPE_UP;
         mouseEventBuffer[mouseEventBufferCount].button = MOUSEBUTTON_LEFT;
-        mouseEventBuffer[mouseEventBufferCount].x = GET_X_LPARAM(lParam);
-        mouseEventBuffer[mouseEventBufferCount].y = GET_Y_LPARAM(lParam);
+        mouseEventBuffer[mouseEventBufferCount].x = GET_X_LPARAM(lParam) * nWidth / nScrWidth;
+        mouseEventBuffer[mouseEventBufferCount].y = GET_Y_LPARAM(lParam) * nHeight / nScrHeight;
         mouseEventBufferCount++;
       } break;
 
@@ -627,6 +629,8 @@ namespace Renderer
     // create an intermediate render target if needed
     // - when rendering in HDR (color space conversion)
     // - when flip model is used in fullscreen, the backbuffer may still be at the native screen resolution
+    nScrWidth = description.Width;
+    nScrHeight = description.Height;
     if (bHdr || description.Width != desc.BufferDesc.Width || description.Height != desc.BufferDesc.Height)
     {
       description.Width = desc.BufferDesc.Width;
